@@ -106,6 +106,6 @@ You now have:
 
 -   A tree-based overlay (A→B, B→C, B→D→E).
 -   Shared memory for A→B on the same machine.
--   gRPC for cross-machine edges (B→C, B→D, D→E).
+-   gRPC for cross-machine edges (B→C, B→D).
 -   gRPC for same-machine interaction (D→E).
 -   A Python client concurrently sending CSV data.
