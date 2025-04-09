@@ -9,8 +9,8 @@
 			"self": "B",
 			"listen_address": "0.0.0.0:50052",
 			"neighbors": {
-				"C": "192.168.0.2:50053",
-				"D": "192.168.0.2:50054"
+				"C": "localhost:50053",
+				"D": "localhost:50054"
 			}
 		},
 		{
@@ -22,7 +22,7 @@
 			"self": "D",
 			"listen_address": "0.0.0.0:50054",
 			"neighbors": {
-				"E": "192.168.0.2:50055"
+				"E": "localhost:50055"
 			}
 		},
 		{

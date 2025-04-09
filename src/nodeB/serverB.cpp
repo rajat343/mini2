@@ -1,4 +1,3 @@
-// src/nodeB/serverB_async.cpp
 #include <iostream>
 #include <thread>
 #include <sys/mman.h>
@@ -8,6 +7,10 @@
 #include "data.pb.h"
 #include "data.grpc.pb.h"
 #include "read_config.h"
+#include <csignal>
+#include <atomic>
+#include <vector>
+#include <mutex>
 
 using grpc::Server;
 using grpc::ServerBuilder;
@@ -22,7 +25,15 @@ using google::protobuf::Empty;
 static const char* SHM_NAME = "/shm_A_to_B";
 static const size_t SHM_SIZE = 500 * 1024 * 1024;
 
-// Tag struct for each async call
+// We'll keep track of lines that B "keeps" in a global vector
+static std::vector<std::string> g_keptDataB;
+static std::mutex g_dataMutexB;
+static std::atomic<bool> g_exitFlag(false);
+
+// Forward declaration for cleanup
+static void printSummaryAndExitB(int);
+
+// Tag struct for each async call to C or D
 struct CallData {
   Record request;
   Empty response;
@@ -31,7 +42,7 @@ struct CallData {
   std::unique_ptr<grpc::ClientAsyncResponseReader<Empty>> rpc;
 };
 
-// Async forwarder without external header
+// Async forwarder: calls Node C or Node D asynchronously
 class AsyncForwarder {
   DataService::Stub* stub_;
   ServerCompletionQueue* cq_;
@@ -58,8 +69,9 @@ public:
   }
 
   void proceed() {
-    // We don't actually serve external RPCs on B; this is just to keep the CQ alive.
-    // If B had incoming RPCs, we'd call RequestSendRecord here.
+    // We don't actually serve external RPC calls on B in this design,
+    // but we must keep the service/cq alive. If B also received gRPC
+    // calls, we'd do RequestSendRecord here.
   }
 
 private:
@@ -67,6 +79,10 @@ private:
   ServerCompletionQueue* cq_;
 };
 
+// We'll use a thread to read from shared memory, distributing data as specified:
+//  - 25% keep in B
+//  - 25% send to C
+//  - 50% send to D
 void readerThread(AsyncForwarder* fwdC, AsyncForwarder* fwdD) {
     int fd = shm_open(SHM_NAME, O_RDONLY, 0666);
     if (fd < 0) {
@@ -84,55 +100,97 @@ void readerThread(AsyncForwarder* fwdC, AsyncForwarder* fwdD) {
     std::cout << "[B] Reader thread started successfully\n";
 
     size_t readOff = 0, last = 0;
-    int lineCounter = 0;
-    int errorCounter = 0;
+    long long lineCounter = 0;
     const int LOG_INTERVAL = 1000;
 
-    while (true) {
-        try {
-            while (readOff < SHM_SIZE && ptr[readOff]) {
-                if (ptr[readOff] == '\n') {
-                    std::string line(ptr + last, readOff - last);
-                    
-                    // Forward to both C and D
-                    fwdC->forward(line);
-                    fwdD->forward(line);
-                    
-                    lineCounter++;
-                    if (lineCounter % LOG_INTERVAL == 0) {
-                        std::cout << "[B] Processed " << lineCounter << " lines (errors: " 
-                                  << errorCounter << ")\n";
+    while (!g_exitFlag.load()) {
+        // If we've read everything up to a null, check for new data
+        while (readOff < SHM_SIZE && ptr[readOff]) {
+            if (ptr[readOff] == '\n') {
+                std::string line(ptr + last, readOff - last);
+                
+                // Decide distribution
+                // We want 25% keep, 25% C, 50% D
+                // E.g. use lineCounter % 4:
+                // 0 -> keep
+                // 1 -> C
+                // 2,3 -> D
+                int modVal = lineCounter % 4;
+                if (modVal == 0) {
+                    // keep in B
+                    {
+                      std::lock_guard<std::mutex> lock(g_dataMutexB);
+                      g_keptDataB.push_back(line);
                     }
-                    
-                    readOff++;
-                    last = readOff;
+                } else if (modVal == 1) {
+                    // send to C
+                    fwdC->forward(line);
                 } else {
-                    readOff++;
+                    // send to D
+                    fwdD->forward(line);
                 }
-            }
 
-            // Reset if we've reached the end of buffer
-            if (readOff >= SHM_SIZE) {
-                readOff = 0;
-                last = 0;
-            }
+                lineCounter++;
+                if (lineCounter % LOG_INTERVAL == 0) {
+                    std::cout << "[B] Processed " << lineCounter << " lines so far\n";
+                }
 
-            std::this_thread::sleep_for(std::chrono::milliseconds(50));
-        } catch (const std::exception& e) {
-            errorCounter++;
-            std::cerr << "[B] Error processing line " << lineCounter 
-                      << ": " << e.what() << "\n";
-            // Reset to last known good position
-            readOff = last;
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                readOff++;
+                last = readOff;
+            } else {
+                readOff++;
+            }
         }
+
+        if (readOff >= SHM_SIZE) {
+            // If we reached end, wrap around
+            readOff = 0;
+            last = 0;
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
 
-    // Cleanup (though this thread runs indefinitely)
     munmap(ptr, SHM_SIZE);
+    std::cout << "[B] Reader thread exit\n";
+}
+
+// Handler to print summary on Ctrl+C
+static void signalHandlerB(int) {
+  printSummaryAndExitB(0);
+}
+
+static void printSummaryAndExitB(int) {
+  g_exitFlag.store(true);
+
+  // Print B's first 5, last 5, total
+  std::vector<std::string> localCopy;
+  {
+    std::lock_guard<std::mutex> lock(g_dataMutexB);
+    localCopy = g_keptDataB;
+  }
+
+  size_t total = localCopy.size();
+  std::cout << "\n[B] ======= SUMMARY =======\n";
+  std::cout << "[B] Total records kept: " << total << "\n";
+  if (total > 0) {
+    std::cout << "[B] First 5:\n";
+    for (size_t i = 0; i < std::min<size_t>(5, total); i++) {
+      std::cout << "  " << localCopy[i] << "\n";
+    }
+    std::cout << "[B] Last 5:\n";
+    for (size_t i = (total >= 5 ? total - 5 : 0); i < total; i++) {
+      std::cout << "  " << localCopy[i] << "\n";
+    }
+  }
+
+  exit(0); // Force exit
 }
 
 int main(int argc, char** argv) {
+  // Setup signal handler for Ctrl+C
+  signal(SIGINT, signalHandlerB);
+
   if (argc < 3) {
     std::cerr << "Usage: " << argv[0] << " <config.json> <nodeName>\n";
     return 1;
@@ -143,6 +201,7 @@ int main(int argc, char** argv) {
     return 1;
   }
 
+  // Build async server (even though B doesn't really receive external requests)
   ServerBuilder builder;
   builder.AddListeningPort(cfg.listenAddress, grpc::InsecureServerCredentials());
   DataService::AsyncService service;
@@ -151,7 +210,7 @@ int main(int argc, char** argv) {
   std::unique_ptr<Server> server(builder.BuildAndStart());
   std::cout << "[B] Async listening on " << cfg.listenAddress << "\n";
 
-  // Build stubs
+  // Build stubs for C and D
   auto stubC = DataService::NewStub(
       grpc::CreateChannel(cfg.neighbors["C"], grpc::InsecureChannelCredentials()));
   auto stubD = DataService::NewStub(
@@ -160,13 +219,18 @@ int main(int argc, char** argv) {
   AsyncForwarder fwdC(stubC.get(), cq.get());
   AsyncForwarder fwdD(stubD.get(), cq.get());
 
-  // Start shared‑memory reader
+  // Create "service" to keep the completion queue alive
+  new NodeBService(&service, cq.get());
+
+  // Start shared memory reading thread
   std::thread(readerThread, &fwdC, &fwdD).detach();
 
-  // Drain the completion queue to delete CallData
+  // Drain the completion queue (not truly used here except for async calls)
   void* tag;
   bool ok;
   while (cq->Next(&tag, &ok)) {
+    // All calls to C or D we created come back here
+    // We just delete them
     delete static_cast<CallData*>(tag);
   }
 
