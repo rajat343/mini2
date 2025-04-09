@@ -6,6 +6,9 @@
 #include "data.grpc.pb.h"
 #include "read_config.h"
 #include <atomic>
+#include <csignal>
+#include <vector>
+#include <mutex>
 
 using grpc::Server;
 using grpc::ServerBuilder;
@@ -17,26 +20,20 @@ using dataflow::DataService;
 using dataflow::Record;
 using google::protobuf::Empty;
 
-std::atomic<int> active_requests(0);
-const int MAX_CONCURRENT = 1000;
-
-// Define tag types for different operations
 enum class TagType { HANDLER, FORWARD };
 
-// Base class for all tags
 struct TagBase {
   virtual ~TagBase() = default;
   TagType type;
-  
   TagBase(TagType t) : type(t) {}
 };
 
-// Forward declaration for handler
-class DHandler;
+class DHandler; // fwd
 
-// Tag for forwarding data to node E
+// Tag for forwarding to E
 struct ForwardTag : public TagBase {
-  ForwardTag(DHandler* h) : TagBase(TagType::FORWARD), handler(h) {}
+  ForwardTag(DHandler* h)
+      : TagBase(TagType::FORWARD), handler(h) {}
   
   Record request;
   Empty response;
@@ -46,16 +43,28 @@ struct ForwardTag : public TagBase {
   DHandler* handler;
 };
 
+// We'll store lines that D keeps
+static std::vector<std::string> g_dataD;
+static std::mutex g_mutexD;
+static std::atomic<bool> g_exitFlagD(false);
+
+// Summaries
+static void printSummaryD(int);
+
+// DHandler manages incoming calls for Node D
+// D keeps 50% and forwards 50% to E
 class DHandler : public TagBase {
 public:
+  enum CallStatus { CREATE, PROCESS, FORWARD, FINISH };
+
   DHandler(DataService::AsyncService* svc,
            ServerCompletionQueue* cq,
-           DataService::Stub* stub_e)
-    : TagBase(TagType::HANDLER), 
-      service_(svc), 
-      cq_(cq), 
-      stub_e_(stub_e), 
-      responder_(&ctx_), 
+           DataService::Stub* stubE)
+    : TagBase(TagType::HANDLER),
+      service_(svc),
+      cq_(cq),
+      stubE_(stubE),
+      responder_(&ctx_),
       status_(CREATE) {
     Proceed();
   }
@@ -65,57 +74,91 @@ public:
       // Request a new call
       status_ = PROCESS;
       service_->RequestSendRecord(&ctx_, &request_, &responder_, cq_, cq_, this);
-    } else if (status_ == PROCESS) {
-      // Create a new handler to service the next request
-      new DHandler(service_, cq_, stub_e_);
-      
-      // Check if we've reached maximum concurrent requests
-      if (active_requests >= MAX_CONCURRENT) {
+    }
+    else if (status_ == PROCESS) {
+      // Spawn a new handler for next requests
+      new DHandler(service_, cq_, stubE_);
+
+      // We'll decide if we keep or forward
+      // We'll do half keep, half forward
+      static long long dLineCounter = 0;
+      int modVal = dLineCounter % 2;
+      dLineCounter++;
+
+      if (modVal == 0) {
+        // Keep
+        {
+          std::lock_guard<std::mutex> lock(g_mutexD);
+          g_dataD.push_back(request_.row_data());
+        }
+        // Done
         status_ = FINISH;
-        responder_.FinishWithError(
-            Status(grpc::RESOURCE_EXHAUSTED, "Too many requests"), this);
-        return;
+        responder_.Finish(response_, Status::OK, this);
+      } else {
+        // Forward to E
+        status_ = FORWARD;
+        auto* ft = new ForwardTag(this);
+        ft->request.set_row_data(request_.row_data());
+        ft->rpc = stubE_->PrepareAsyncSendRecord(&ft->ctx, ft->request, cq_);
+        ft->rpc->StartCall();
+        ft->rpc->Finish(&ft->response, &ft->status, ft);
       }
-      
-      // Forward the request to node E
-      active_requests++;
-      status_ = FORWARD;
-      
-      auto* fd = new ForwardTag(this);
-      fd->request.set_row_data(request_.row_data());
-      fd->rpc = stub_e_->PrepareAsyncSendRecord(&fd->ctx, fd->request, cq_);
-      fd->rpc->StartCall();
-      fd->rpc->Finish(&fd->response, &fd->status, fd);
-    } else if (status_ == FORWARD) {
-      // Forward completed, finish our response
+    }
+    else if (status_ == FORWARD) {
+      // Forward done, respond to the original caller
       status_ = FINISH;
       responder_.Finish(response_, Status::OK, this);
-    } else {
-      // We're done, decrement active requests and clean up
-      active_requests--;
+    }
+    else {
+      // FINISH
       delete this;
     }
   }
-  
-  // Called when forwarding is complete
-  void ForwardComplete() {
-    Proceed(); // Move to next state
-  }
 
-  enum CallStatus { CREATE, PROCESS, FORWARD, FINISH };
-  CallStatus status_;
+  // Called when forwarding finishes
+  void ForwardComplete() {
+    Proceed();
+  }
 
 private:
   DataService::AsyncService* service_;
   ServerCompletionQueue* cq_;
-  DataService::Stub* stub_e_;
+  DataService::Stub* stubE_;
+
   ServerContext ctx_;
   Record request_;
   Empty response_;
   grpc::ServerAsyncResponseWriter<Empty> responder_;
+  CallStatus status_;
 };
 
+static void signalHandlerD(int) {
+  printSummaryD(0);
+}
+
+static void printSummaryD(int) {
+  g_exitFlagD.store(true);
+
+  std::lock_guard<std::mutex> lock(g_mutexD);
+  size_t total = g_dataD.size();
+  std::cout << "\n[D] ======= SUMMARY =======\n";
+  std::cout << "[D] Total records: " << total << "\n";
+  if (total > 0) {
+    std::cout << "[D] First 5:\n";
+    for (size_t i = 0; i < std::min<size_t>(5, total); i++) {
+      std::cout << "  " << g_dataD[i] << "\n";
+    }
+    std::cout << "[D] Last 5:\n";
+    for (size_t i = (total >= 5 ? total - 5 : 0); i < total; i++) {
+      std::cout << "  " << g_dataD[i] << "\n";
+    }
+  }
+  exit(0);
+}
+
 int main(int argc, char** argv) {
+  signal(SIGINT, signalHandlerD);
+
   if (argc < 3) {
     std::cerr << "Usage: " << argv[0] << " <config.json> <nodeName>\n";
     return 1;
@@ -133,38 +176,35 @@ int main(int argc, char** argv) {
   builder.RegisterService(&service);
   auto cq = builder.AddCompletionQueue();
 
-  // Create stub to E
-  auto stub_e = DataService::NewStub(
+  // Build stub to E
+  auto stubE = DataService::NewStub(
       grpc::CreateChannel(cfg.neighbors["E"], grpc::InsecureChannelCredentials()));
 
-  // Build and start server
   std::unique_ptr<Server> server(builder.BuildAndStart());
   std::cout << "[D] Async listening on " << cfg.listenAddress << "\n";
 
-  // Spawn first handler
-  new DHandler(&service, cq.get(), stub_e.get());
+  // Start first handler
+  new DHandler(&service, cq.get(), stubE.get());
 
-  // Completion queue loop
+  // Drain the CQ
   void* tag;
   bool ok;
   while (cq->Next(&tag, &ok)) {
     auto* base_tag = static_cast<TagBase*>(tag);
-    
-    if (ok) {
-      // Process based on tag type
+    if (!ok) {
+      // Operation failed/cancelled
+      delete base_tag;
+    } else {
       if (base_tag->type == TagType::FORWARD) {
-        // This is a completed forward call
-        auto* forward_tag = static_cast<ForwardTag*>(base_tag);
-        DHandler* handler = forward_tag->handler;
-        delete forward_tag;  // Clean up ForwardTag
-        handler->ForwardComplete();  // Move the handler to the next state
+        // Forward finished
+        auto* ft = static_cast<ForwardTag*>(base_tag);
+        DHandler* handler = ft->handler;
+        delete ft;
+        handler->ForwardComplete();
       } else {
-        // This is a DHandler tag
+        // This is a DHandler
         static_cast<DHandler*>(base_tag)->Proceed();
       }
-    } else {
-      // RPC was cancelled or failed
-      delete base_tag; // Clean up the tag object
     }
   }
 
