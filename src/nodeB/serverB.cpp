@@ -11,6 +11,8 @@
 #include <map>
 #include <vector>
 #include <csignal>
+#include <sstream>
+#include <iomanip>
 
 #include <grpcpp/grpcpp.h>
 #include "data.pb.h"
@@ -25,9 +27,11 @@ using grpc::Status;
 using google::protobuf::Empty;
 using dataflow::DataService;
 using dataflow::Record;
+using dataflow::RecordBatch;
 
 static const char* SHM_NAME = "/shm_A_to_B";
 static const size_t SHM_SIZE = 500 * 1024 * 1024;
+static const int BATCH_SIZE = 5119; // Increased from 100 to 5000
 
 std::mutex g_mutex;
 char* g_shmPtr = nullptr;
@@ -48,6 +52,7 @@ double g_totalReadTime = 0.0;
 double g_totalDistributeTime = 0.0;
 size_t g_totalIterations = 0;
 size_t g_totalLinesProcessed = 0;
+size_t g_totalBatchesSent = 0;
 
 // Make the gRPC server a static/global so signal handler can call Shutdown()
 static std::unique_ptr<Server> g_server;
@@ -60,8 +65,26 @@ void handleSigint(int /* signum */) {
     }
 }
 
+class Timer {
+private:
+    std::chrono::high_resolution_clock::time_point start_time;
+    std::string name;
+public:
+    Timer(const std::string& timer_name) : name(timer_name) {
+        start_time = std::chrono::high_resolution_clock::now();
+    }
+    
+    ~Timer() {
+        auto end_time = std::chrono::high_resolution_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count();
+        std::cout << "[TIMER] " << name << ": " << std::fixed << std::setprecision(6) 
+                  << (duration / 1000000.0) << " seconds" << std::endl;
+    }
+};
+
 class NodeBServiceImpl final : public DataService::Service {
 public:
+    // Keep original single record handling for backward compatibility
     Status SendRecord(ServerContext* context, const Record* request, Empty* response) override {
         auto start_time = std::chrono::high_resolution_clock::now();
         
@@ -74,12 +97,69 @@ public:
         
         return Status::OK;
     }
+    
+    // Add batch processing support for consistency
+    Status SendRecordBatch(ServerContext* context, const RecordBatch* request, Empty* response) override {
+        Timer timer("B::SendRecordBatch");
+        
+        int batch_size = request->records_size();
+        std::cout << "[B] Received batch with " << batch_size << " records" << std::endl;
+        
+        // We don't actually expect to receive batches in B this way, as data comes from shared memory
+        // But we implement it for API completeness
+        
+        return Status::OK;
+    }
 };
 
-void forwardTo(const std::string& neighborName, const std::string& data) {
+// Forward data to C or D in batches
+void forwardBatchTo(const std::string& neighborName, const std::vector<std::string>& rows) {
+    Timer timer("B::forwardBatchTo(" + neighborName + ")");
+    
     static std::map<std::string, int> forwardCounters;
     
-    auto start_time = std::chrono::high_resolution_clock::now();
+    auto it = g_stubs.find(neighborName);
+    if (it == g_stubs.end()) {
+        std::cerr << "[B] No stub for neighbor " << neighborName << "\n";
+        return;
+    }
+    
+    // Create a batch
+    RecordBatch batch;
+    for (const auto& row : rows) {
+        Record* record = batch.add_records();
+        record->set_row_data(row);
+    }
+    
+    // Send the batch
+    Empty e;
+    ClientContext ctx;
+    
+    // Set timeout to handle large batches
+    ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(30));
+    
+    Status status = it->second->SendRecordBatch(&ctx, batch, &e);
+    
+    // Update counters
+    forwardCounters[neighborName]++;
+    g_totalBatchesSent++;
+    
+    if (!status.ok()) {
+        std::cerr << "[B] Error forwarding batch to D: "
+                  << status.error_message()
+                  << " (code: " << status.error_code() << ")"
+                  << std::endl;
+    } else if (forwardCounters[neighborName] % 10 == 0) {
+        // Log only every 10 batches
+        std::cout << "[B] Forwarded batch #" << forwardCounters[neighborName] 
+                 << " with " << rows.size() << " rows to " << neighborName << std::endl;
+        std::cout << "[B] Total batches sent: " << g_totalBatchesSent << std::endl;
+    }
+}
+
+// Keep legacy single record forwarding for backward compatibility
+void forwardTo(const std::string& neighborName, const std::string& data) {
+    static std::map<std::string, int> forwardCounters;
     
     auto it = g_stubs.find(neighborName);
     if (it == g_stubs.end()) {
@@ -95,11 +175,8 @@ void forwardTo(const std::string& neighborName, const std::string& data) {
     // Increment counter and log only every 100 forwards
     forwardCounters[neighborName]++;
     if (forwardCounters[neighborName] % 100 == 0) {
-        auto duration = std::chrono::duration_cast<std::chrono::microseconds>(
-            std::chrono::high_resolution_clock::now() - start_time).count();
-            
         std::cout << "[B] Forwarded record #" << forwardCounters[neighborName] 
-                 << " to " << neighborName << " in " << (duration/1000000.0) << " seconds" << std::endl;
+                 << " to " << neighborName << std::endl;
     }
 }
 
@@ -109,6 +186,13 @@ void readAndDistribute() {
     size_t lastOffset = 0;
     bool isFirstLine = true;
     int iteration_counter = 0;
+    
+    // Vectors for batched processing
+    std::vector<std::string> batchForC;
+    std::vector<std::string> batchForD;
+    
+    batchForC.reserve(BATCH_SIZE);
+    batchForD.reserve(BATCH_SIZE);
     
     while (true) {
         iteration_counter++;
@@ -163,7 +247,7 @@ void readAndDistribute() {
             size_t cCnt = static_cast<size_t>(total * SEND_TO_C_PERCENT);
             size_t dCnt = total - keepCnt - cCnt;
 
-            // Keep rows - remove individual row logging
+            // Keep rows
             for (size_t i = 0; i < keepCnt; i++) {
                 g_keptRows.push_back(lines[i]);
             }
@@ -173,26 +257,38 @@ void readAndDistribute() {
                           << g_keptRows.size() << ")\n";
             }
 
-            // Send to C - remove individual row logging
+            // Add rows to batch for C
             for (size_t i = keepCnt; i < keepCnt + cCnt; i++) {
                 g_sentToCRows.push_back(lines[i]);
-                forwardTo("C", lines[i]);
+                batchForC.push_back(lines[i]);
+                
+                // When batch is full, send it
+                if (batchForC.size() >= BATCH_SIZE) {
+                    forwardBatchTo("C", batchForC);
+                    batchForC.clear();
+                }
             }
             
             if (should_log) {
                 std::cout << "[B] Added " << cCnt << " rows to g_sentToCRows (total now " 
-                          << g_sentToCRows.size() << ")\n";
+                          << g_sentToCRows.size() << "), Current batch size: " << batchForC.size() << "\n";
             }
 
-            // Send to D - remove individual row logging
+            // Add rows to batch for D
             for (size_t i = keepCnt + cCnt; i < total; i++) {
                 g_sentToDRows.push_back(lines[i]);
-                forwardTo("D", lines[i]);
+                batchForD.push_back(lines[i]);
+                
+                // When batch is full, send it
+                if (batchForD.size() >= BATCH_SIZE) {
+                    forwardBatchTo("D", batchForD);
+                    batchForD.clear();
+                }
             }
             
             if (should_log) {
                 std::cout << "[B] Added " << dCnt << " rows to g_sentToDRows (total now " 
-                          << g_sentToDRows.size() << ")\n";
+                          << g_sentToDRows.size() << "), Current batch size: " << batchForD.size() << "\n";
             }
             
             auto distribute_duration = std::chrono::duration_cast<std::chrono::microseconds>(
@@ -225,6 +321,8 @@ void readAndDistribute() {
 void RunNodeB(const std::string& jsonFile, const std::string& nodeName) {
     auto start_time = std::chrono::high_resolution_clock::now();
     
+    std::cout << "[B] Starting with batch size: " << BATCH_SIZE << std::endl;
+    
     NodeConfig config;
     if (!loadNodeConfig(jsonFile, nodeName, config)) {
         std::cerr << "[B] Failed to load config.\n";
@@ -248,11 +346,17 @@ void RunNodeB(const std::string& jsonFile, const std::string& nodeName) {
         std::chrono::high_resolution_clock::now() - start_time).count();
     std::cout << "[B] Initial setup completed in " << (setup_duration/1000000.0) << " seconds" << std::endl;
 
-    // Build stubs to neighbors
+    // Build stubs to neighbors with increased message size
     for (const auto& kv : config.neighbors) {
+        grpc::ChannelArguments args;
+        args.SetMaxSendMessageSize(50 * 1024 * 1024); // 50MB
+        args.SetMaxReceiveMessageSize(50 * 1024 * 1024); // 50MB
+        
         g_stubs[kv.first] = DataService::NewStub(
-            grpc::CreateChannel(kv.second, grpc::InsecureChannelCredentials())
+            grpc::CreateCustomChannel(kv.second, grpc::InsecureChannelCredentials(), args)
         );
+        
+        std::cout << "[B] Created channel to " << kv.first << " at " << kv.second << std::endl;
     }
 
     // Start background thread to read from shared memory
@@ -264,6 +368,10 @@ void RunNodeB(const std::string& jsonFile, const std::string& nodeName) {
     ServerBuilder builder;
     builder.AddListeningPort(config.listenAddress, grpc::InsecureServerCredentials());
     builder.RegisterService(&service);
+    
+    // Set max message size for incoming requests
+    builder.SetMaxReceiveMessageSize(50 * 1024 * 1024); // 50MB
+    builder.SetMaxSendMessageSize(50 * 1024 * 1024); // 50MB
 
     // Install our signal handler
     std::signal(SIGINT, handleSigint);
@@ -295,6 +403,8 @@ void RunNodeB(const std::string& jsonFile, const std::string& nodeName) {
     std::cout << "\n[B] TIMING STATISTICS:\n";
     std::cout << "  - Total iterations: " << g_totalIterations << "\n";
     std::cout << "  - Total lines processed: " << g_totalLinesProcessed << "\n";
+    std::cout << "  - Total batches sent: " << g_totalBatchesSent << "\n";
+    std::cout << "  - Average batch size: " << (g_totalBatchesSent > 0 ? (g_sentToCRows.size() + g_sentToDRows.size()) / g_totalBatchesSent : 0) << "\n";
     std::cout << "  - Total read time: " << g_totalReadTime << " seconds\n";
     std::cout << "  - Total distribute time: " << g_totalDistributeTime << " seconds\n";
     std::cout << "  - Average read time per iteration: " << (g_totalIterations > 0 ? g_totalReadTime / g_totalIterations : 0) << " seconds\n";

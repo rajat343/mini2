@@ -8,9 +8,10 @@ import data_pb2_grpc
 
 # The channel to Node A
 A_ADDRESS = 'localhost:50051'  # adjust if A is remote
+BATCH_SIZE = 5119  # Configure batch size here
 
 def send_records(thread_id, records):
-    """Send a batch of CSV rows to Node A."""
+    """Send batches of CSV rows to Node A."""
     print(f"[Thread-{thread_id}] Starting. Will send {len(records)} rows to A_ADDRESS={A_ADDRESS}")
     
     # Start timing for this thread
@@ -20,29 +21,37 @@ def send_records(thread_id, records):
     stub = data_pb2_grpc.DataServiceStub(channel)
 
     sent_count = 0
-    for idx, row in enumerate(records):
-        # Track time per record
-        record_start_time = time.time()
+    batch_count = 0
+    
+    # Process records in batches
+    for i in range(0, len(records), BATCH_SIZE):
+        batch_start_time = time.time()
         
-        # Each row is a list of columns, join them or parse as needed
-        line = ','.join(row)
-        request = data_pb2.Record(row_data=line)
+        # Create a batch of records
+        batch = records[i:i+BATCH_SIZE]
+        batch_proto = data_pb2.RecordBatch()
+        
+        for row in batch:
+            record = batch_proto.records.add()
+            record.row_data = ','.join(row)
+        
         try:
-            stub.SendRecord(request)  # one-way push
-            sent_count += 1
+            # Send the batch
+            stub.SendRecordBatch(batch_proto)
+            sent_count += len(batch)
+            batch_count += 1
             
-            # Log timing for some records (not all to avoid flooding logs)
-            if idx % 100 == 0:
-                record_time = time.time() - record_start_time
-                print(f"[Thread-{thread_id}] Record {idx} sent in {record_time:.6f} seconds")
+            batch_time = time.time() - batch_start_time
+            if batch_count % 10 == 0:  # Log every 10 batches
+                print(f"[Thread-{thread_id}] Batch {batch_count} with {len(batch)} records sent in {batch_time:.6f} seconds")
                 
         except grpc.RpcError as e:
-            # LOG: any exception details
             print(f"[Thread-{thread_id}] gRPC Error: {e.code()} - {e.details()}")
-            break  # or continue, depending on how you want to handle it
+            break
 
     thread_time = time.time() - thread_start_time
-    print(f"[Thread-{thread_id}] Done sending {sent_count} rows (out of {len(records)}) in {thread_time:.2f} seconds.")
+    print(f"[Thread-{thread_id}] Done sending {sent_count} rows in {batch_count} batches in {thread_time:.2f} seconds.")
+    print(f"[Thread-{thread_id}] Average time per batch: {thread_time/batch_count if batch_count else 0:.6f} seconds")
     return thread_time, sent_count
 
 def main():
@@ -75,7 +84,6 @@ def main():
     threads = []
     thread_objects = []
 
-    
     # Send "__START__" signal to Node E before starting
     try:
         channel_e = grpc.insecure_channel("localhost:50055")
@@ -116,6 +124,7 @@ def main():
     print(f"[Client] Average thread processing time: {avg_thread_time:.2f} seconds")
     print(f"[Client] Records sent: {total_sent}")
     print(f"[Client] Average throughput: {total_sent/total_time:.2f} records/second")
+    print(f"[Client] BATCH SIZE used: {BATCH_SIZE}")
     print("[Client] All threads finished sending data.")
 
 if __name__ == "__main__":

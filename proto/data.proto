@@ -2,18 +2,25 @@ syntax = "proto3";
 
 package dataflow;
 
-// We use Google's well-known Empty for a simple response
 import "google/protobuf/empty.proto";
 
-// A single row from your CSV. In practice, split fields as needed.
+// Record message for individual record processing
 message Record {
   string row_data = 1;
 }
 
-// Service definition
-service DataService {
-  // One-way push: client -> server
-  rpc SendRecord (Record) returns (google.protobuf.Empty);
+// Define RecordBatch message for batch processing
+message RecordBatch {
+  repeated Record records = 1;
+}
 
-  // Optionally: we might want a streaming method later, but let's keep it simple for now.
+service DataService {
+  // Send individual record
+  rpc SendRecord(Record) returns (google.protobuf.Empty) {}
+  
+  // Send batch of records - make sure method name matches implementation
+  rpc SendRecordBatch(RecordBatch) returns (google.protobuf.Empty) {}
+  
+  // Signal end of stream
+  rpc EndStream(google.protobuf.Empty) returns (google.protobuf.Empty) {}
 }

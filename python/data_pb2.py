@@ -25,7 +25,7 @@ _sym_db = _symbol_database.Default()
 from google.protobuf import empty_pb2 as google_dot_protobuf_dot_empty__pb2
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\ndata.proto\x12\x08\x64\x61taflow\x1a\x1bgoogle/protobuf/empty.proto\"\x1a\n\x06Record\x12\x10\n\x08row_data\x18\x01 \x01(\t2E\n\x0b\x44\x61taService\x12\x36\n\nSendRecord\x12\x10.dataflow.Record\x1a\x16.google.protobuf.Emptyb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\ndata.proto\x12\x08\x64\x61taflow\x1a\x1bgoogle/protobuf/empty.proto\"\x1a\n\x06Record\x12\x10\n\x08row_data\x18\x01 \x01(\t\"0\n\x0bRecordBatch\x12!\n\x07records\x18\x01 \x03(\x0b\x32\x10.dataflow.Record2\xca\x01\n\x0b\x44\x61taService\x12\x38\n\nSendRecord\x12\x10.dataflow.Record\x1a\x16.google.protobuf.Empty\"\x00\x12\x42\n\x0fSendRecordBatch\x12\x15.dataflow.RecordBatch\x1a\x16.google.protobuf.Empty\"\x00\x12=\n\tEndStream\x12\x16.google.protobuf.Empty\x1a\x16.google.protobuf.Empty\"\x00\x62\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -34,6 +34,8 @@ if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
   _globals['_RECORD']._serialized_start=53
   _globals['_RECORD']._serialized_end=79
-  _globals['_DATASERVICE']._serialized_start=81
-  _globals['_DATASERVICE']._serialized_end=150
+  _globals['_RECORDBATCH']._serialized_start=81
+  _globals['_RECORDBATCH']._serialized_end=129
+  _globals['_DATASERVICE']._serialized_start=132
+  _globals['_DATASERVICE']._serialized_end=334
 # @@protoc_insertion_point(module_scope)

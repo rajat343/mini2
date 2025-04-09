@@ -1,12 +1,12 @@
 #include <iostream>
 #include <vector>
 #include <memory>
-#include <csignal>  // <-- for std::signal and SIGINT
+#include <csignal>
 #include <grpcpp/grpcpp.h>
 #include "data.pb.h"
 #include "data.grpc.pb.h"
 #include "read_config.h"
-#include <chrono>  // for timing metrics
+#include <chrono>
 
 using grpc::Server;
 using grpc::ServerBuilder;
@@ -16,23 +16,21 @@ using grpc::Status;
 using google::protobuf::Empty;
 using dataflow::DataService;
 using dataflow::Record;
+using dataflow::RecordBatch;
 
 static const float KEEP_PERCENT = 0.5f;
+static const int BATCH_SIZE = 5119;
 
-// Trackers
 std::vector<std::string> g_keptRows;
 std::vector<std::string> g_sentToERows;
+std::vector<std::string> g_batchBuffer;
 
-// Global server pointer for graceful shutdown
 static std::unique_ptr<Server> g_server;
-
-// Performance metrics
 auto g_startTime = std::chrono::high_resolution_clock::now();
 double g_totalProcessingTime = 0.0;
 int g_totalRecordsProcessed = 0;
 
-// Signal handler
-void handleSigint(int /* signum */) {
+void handleSigint(int) {
     if (g_server) {
         std::cout << "[D] Received SIGINT, shutting down server gracefully...\n";
         g_server->Shutdown();
@@ -41,64 +39,99 @@ void handleSigint(int /* signum */) {
 
 class NodeDServiceImpl final : public DataService::Service {
     std::unique_ptr<DataService::Stub> stubE;
-public:
-Status SendRecord(ServerContext* context, const Record* request, Empty* response) override {
-    // Start timing for this record
-    auto startTime = std::chrono::high_resolution_clock::now();
-    
-    // Decide whether to keep or send to E
-    if (rand() % 100 < (KEEP_PERCENT * 100)) {
-        g_keptRows.push_back(request->row_data());
-        // Only log occasionally
-        if (g_keptRows.size() % 100 == 0) {
-            std::cout << "[D] Kept row #" << g_keptRows.size() << "\n";
-        }
-    } else {
+
+    void ensureStubE() {
         if (!stubE) {
-            // Hard-coded address here for demonstration; in real code, read from config
-            stubE = DataService::NewStub(
-                grpc::CreateChannel("localhost:50055", grpc::InsecureChannelCredentials())
-            );
+            stubE = DataService::NewStub(grpc::CreateChannel("localhost:50055", grpc::InsecureChannelCredentials()));
+            std::cout << "[D] Initialized stubE for localhost:50055\n";
         }
-        g_sentToERows.push_back(request->row_data());
-        Record record;
-        record.set_row_data(request->row_data());
+    }
+
+    void sendBatchToE() {
+        if (g_batchBuffer.empty()) return;
+        ensureStubE();
+
+        RecordBatch batch;
+        for (const auto& row : g_batchBuffer) {
+            Record* rec = batch.add_records();
+            rec->set_row_data(row);
+            g_sentToERows.push_back(row);
+        }
+
         Empty e;
         ClientContext ctx;
-        stubE->SendRecord(&ctx, record, &e);
-        
-        // Only log occasionally
-        if (g_sentToERows.size() % 100 == 0) {
-            std::cout << "[D] Sent to E: row #" << g_sentToERows.size() << "\n";
+        Status status = stubE->SendRecordBatch(&ctx, batch, &e);
+
+        if (!status.ok()) {
+            std::cerr << "[D] \u274c Failed to send batch to Node E: "
+                      << status.error_message() << " (code: " << status.error_code() << ")\n";
+        } else {
+            std::cout << "[D] \u2705 Sent batch of " << g_batchBuffer.size()
+                      << " rows to E (Total sent: " << g_sentToERows.size() << ")\n";
         }
+
+        g_batchBuffer.clear();
     }
-    
-    // End timing for this record
-    auto duration = std::chrono::duration_cast<std::chrono::microseconds>(
-        std::chrono::high_resolution_clock::now() - startTime).count();
-    double durationSec = duration / 1000000.0;
-    
-    // Update metrics
-    g_totalProcessingTime += durationSec;
-    g_totalRecordsProcessed++;
-    
-    // Log processing time only periodically
-    if (g_totalRecordsProcessed % 100 == 0) {
-        std::cout << "[D] Processed record #" << g_totalRecordsProcessed 
-                << " in " << durationSec << " seconds\n";
-    
-        // Print periodic statistics
-        auto totalTime = std::chrono::duration_cast<std::chrono::seconds>(
-            std::chrono::high_resolution_clock::now() - g_startTime).count();
-        
-        std::cout << "[D] PERFORMANCE METRICS:\n"
-                << "  - Records processed: " << g_totalRecordsProcessed << "\n"
-                << "  - Average processing time: " << (g_totalProcessingTime / g_totalRecordsProcessed) << " sec/record\n"
-                << "  - Throughput: " << (g_totalRecordsProcessed / (totalTime > 0 ? totalTime : 1)) << " records/sec\n";
+
+public:
+    Status SendRecord(ServerContext* context, const Record* request, Empty* response) override {
+        if (request->row_data() == "__START__") {
+            std::cout << "[D] \u23f1 Received __START__ signal. Forwarding to E...\n";
+            ensureStubE();
+            Record startRecord;
+            startRecord.set_row_data("__START__");
+            Empty e;
+            ClientContext ctx;
+            stubE->SendRecord(&ctx, startRecord, &e);
+            return Status::OK;
+        }
+
+        g_totalRecordsProcessed++;
+
+        if (rand() % 100 < (KEEP_PERCENT * 100)) {
+            g_keptRows.push_back(request->row_data());
+        } else {
+            g_batchBuffer.push_back(request->row_data());
+            if (g_batchBuffer.size() >= BATCH_SIZE) {
+                sendBatchToE();
+            }
+        }
+
+        return Status::OK;
     }
-    
-    return Status::OK;
-}
+
+    Status SendRecordBatch(ServerContext* context, const RecordBatch* request, Empty* response) override {
+        std::cout << "[D] Received batch of " << request->records_size() << " records from B\n";
+
+        for (int i = 0; i < request->records_size(); ++i) {
+            g_totalRecordsProcessed++;
+            if (rand() % 100 < (KEEP_PERCENT * 100)) {
+                g_keptRows.push_back(request->records(i).row_data());
+            } else {
+                g_batchBuffer.push_back(request->records(i).row_data());
+            }
+
+            if (g_batchBuffer.size() >= BATCH_SIZE) {
+                sendBatchToE();
+            }
+        }
+
+        return Status::OK;
+    }
+
+    Status EndStream(ServerContext* context, const Empty* request, Empty* response) override {
+        std::cout << "[D] EndStream received. Sending remaining " << g_batchBuffer.size() << " rows...\n";
+        sendBatchToE();
+
+        if (stubE) {
+            Empty req, resp;
+            ClientContext ctx;
+            stubE->EndStream(&ctx, req, &resp);
+            std::cout << "[D] Forwarded EndStream to E\n";
+        }
+
+        return Status::OK;
+    }
 };
 
 void RunNodeD(const std::string& jsonFile, const std::string& nodeName) {
@@ -113,23 +146,18 @@ void RunNodeD(const std::string& jsonFile, const std::string& nodeName) {
     builder.AddListeningPort(config.listenAddress, grpc::InsecureServerCredentials());
     builder.RegisterService(&service);
 
-    // Install our signal handler
     std::signal(SIGINT, handleSigint);
-
-    // Reset start time before server starts
     g_startTime = std::chrono::high_resolution_clock::now();
-    
+
     g_server = builder.BuildAndStart();
     std::cout << "[D] Listening on " << config.listenAddress << "\n";
+    std::cout << "[D] Batch processing enabled with batch size: " << BATCH_SIZE << "\n";
 
-    // Will block here until handleSigint calls Shutdown()
     g_server->Wait();
 
-    // Calculate final performance metrics
     auto totalTime = std::chrono::duration_cast<std::chrono::seconds>(
         std::chrono::high_resolution_clock::now() - g_startTime).count();
 
-    // Final summary after normal shutdown
     std::cout << "\n[D] FINAL SUMMARY:\n";
     if (!g_keptRows.empty()) {
         std::cout << "  - KEPT: " << g_keptRows.size() << " rows\n"
@@ -141,8 +169,7 @@ void RunNodeD(const std::string& jsonFile, const std::string& nodeName) {
                   << "    FIRST: " << g_sentToERows.front() << "\n"
                   << "    LAST: " << g_sentToERows.back() << "\n";
     }
-    
-    // Print final performance metrics
+
     std::cout << "\n[D] FINAL PERFORMANCE METRICS:\n"
               << "  - Total runtime: " << totalTime << " seconds\n"
               << "  - Total records processed: " << g_totalRecordsProcessed << "\n"

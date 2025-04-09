@@ -27,8 +27,7 @@ if _version_not_supported:
 
 
 class DataServiceStub(object):
-    """Service definition
-    """
+    """Missing associated documentation comment in .proto file."""
 
     def __init__(self, channel):
         """Constructor.
@@ -41,14 +40,37 @@ class DataServiceStub(object):
                 request_serializer=data__pb2.Record.SerializeToString,
                 response_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
                 _registered_method=True)
+        self.SendRecordBatch = channel.unary_unary(
+                '/dataflow.DataService/SendRecordBatch',
+                request_serializer=data__pb2.RecordBatch.SerializeToString,
+                response_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
+                _registered_method=True)
+        self.EndStream = channel.unary_unary(
+                '/dataflow.DataService/EndStream',
+                request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
+                response_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
+                _registered_method=True)
 
 
 class DataServiceServicer(object):
-    """Service definition
-    """
+    """Missing associated documentation comment in .proto file."""
 
     def SendRecord(self, request, context):
-        """One-way push: client -> server
+        """Send individual record
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SendRecordBatch(self, request, context):
+        """Send batch of records - make sure method name matches implementation
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def EndStream(self, request, context):
+        """Signal end of stream
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -62,6 +84,16 @@ def add_DataServiceServicer_to_server(servicer, server):
                     request_deserializer=data__pb2.Record.FromString,
                     response_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
             ),
+            'SendRecordBatch': grpc.unary_unary_rpc_method_handler(
+                    servicer.SendRecordBatch,
+                    request_deserializer=data__pb2.RecordBatch.FromString,
+                    response_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
+            ),
+            'EndStream': grpc.unary_unary_rpc_method_handler(
+                    servicer.EndStream,
+                    request_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
+                    response_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
+            ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
             'dataflow.DataService', rpc_method_handlers)
@@ -71,8 +103,7 @@ def add_DataServiceServicer_to_server(servicer, server):
 
  # This class is part of an EXPERIMENTAL API.
 class DataService(object):
-    """Service definition
-    """
+    """Missing associated documentation comment in .proto file."""
 
     @staticmethod
     def SendRecord(request,
@@ -90,6 +121,60 @@ class DataService(object):
             target,
             '/dataflow.DataService/SendRecord',
             data__pb2.Record.SerializeToString,
+            google_dot_protobuf_dot_empty__pb2.Empty.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SendRecordBatch(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/dataflow.DataService/SendRecordBatch',
+            data__pb2.RecordBatch.SerializeToString,
+            google_dot_protobuf_dot_empty__pb2.Empty.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def EndStream(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/dataflow.DataService/EndStream',
+            google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
             google_dot_protobuf_dot_empty__pb2.Empty.FromString,
             options,
             channel_credentials,

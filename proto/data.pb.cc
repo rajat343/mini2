@@ -52,6 +52,31 @@ struct RecordDefaultTypeInternal {
 
 PROTOBUF_ATTRIBUTE_NO_DESTROY PROTOBUF_CONSTINIT
     PROTOBUF_ATTRIBUTE_INIT_PRIORITY1 RecordDefaultTypeInternal _Record_default_instance_;
+
+inline constexpr RecordBatch::Impl_::Impl_(
+    ::_pbi::ConstantInitialized) noexcept
+      : records_{},
+        _cached_size_{0} {}
+
+template <typename>
+PROTOBUF_CONSTEXPR RecordBatch::RecordBatch(::_pbi::ConstantInitialized)
+#if defined(PROTOBUF_CUSTOM_VTABLE)
+    : ::google::protobuf::Message(_class_data_.base()),
+#else   // PROTOBUF_CUSTOM_VTABLE
+    : ::google::protobuf::Message(),
+#endif  // PROTOBUF_CUSTOM_VTABLE
+      _impl_(::_pbi::ConstantInitialized()) {
+}
+struct RecordBatchDefaultTypeInternal {
+  PROTOBUF_CONSTEXPR RecordBatchDefaultTypeInternal() : _instance(::_pbi::ConstantInitialized{}) {}
+  ~RecordBatchDefaultTypeInternal() {}
+  union {
+    RecordBatch _instance;
+  };
+};
+
+PROTOBUF_ATTRIBUTE_NO_DESTROY PROTOBUF_CONSTINIT
+    PROTOBUF_ATTRIBUTE_INIT_PRIORITY1 RecordBatchDefaultTypeInternal _RecordBatch_default_instance_;
 }  // namespace dataflow
 static constexpr const ::_pb::EnumDescriptor**
     file_level_enum_descriptors_data_2eproto = nullptr;
@@ -69,21 +94,37 @@ const ::uint32_t
         ~0u,  // no _split_
         ~0u,  // no sizeof(Split)
         PROTOBUF_FIELD_OFFSET(::dataflow::Record, _impl_.row_data_),
+        ~0u,  // no _has_bits_
+        PROTOBUF_FIELD_OFFSET(::dataflow::RecordBatch, _internal_metadata_),
+        ~0u,  // no _extensions_
+        ~0u,  // no _oneof_case_
+        ~0u,  // no _weak_field_map_
+        ~0u,  // no _inlined_string_donated_
+        ~0u,  // no _split_
+        ~0u,  // no sizeof(Split)
+        PROTOBUF_FIELD_OFFSET(::dataflow::RecordBatch, _impl_.records_),
 };
 
 static const ::_pbi::MigrationSchema
     schemas[] ABSL_ATTRIBUTE_SECTION_VARIABLE(protodesc_cold) = {
         {0, -1, -1, sizeof(::dataflow::Record)},
+        {9, -1, -1, sizeof(::dataflow::RecordBatch)},
 };
 static const ::_pb::Message* const file_default_instances[] = {
     &::dataflow::_Record_default_instance_._instance,
+    &::dataflow::_RecordBatch_default_instance_._instance,
 };
 const char descriptor_table_protodef_data_2eproto[] ABSL_ATTRIBUTE_SECTION_VARIABLE(
     protodesc_cold) = {
     "\n\ndata.proto\022\010dataflow\032\033google/protobuf/"
-    "empty.proto\"\032\n\006Record\022\020\n\010row_data\030\001 \001(\t2"
-    "E\n\013DataService\0226\n\nSendRecord\022\020.dataflow."
-    "Record\032\026.google.protobuf.Emptyb\006proto3"
+    "empty.proto\"\032\n\006Record\022\020\n\010row_data\030\001 \001(\t\""
+    "0\n\013RecordBatch\022!\n\007records\030\001 \003(\0132\020.datafl"
+    "ow.Record2\312\001\n\013DataService\0228\n\nSendRecord\022"
+    "\020.dataflow.Record\032\026.google.protobuf.Empt"
+    "y\"\000\022B\n\017SendRecordBatch\022\025.dataflow.Record"
+    "Batch\032\026.google.protobuf.Empty\"\000\022=\n\tEndSt"
+    "ream\022\026.google.protobuf.Empty\032\026.google.pr"
+    "otobuf.Empty\"\000b\006proto3"
 };
 static const ::_pbi::DescriptorTable* const descriptor_table_data_2eproto_deps[1] =
     {
@@ -93,13 +134,13 @@ static ::absl::once_flag descriptor_table_data_2eproto_once;
 PROTOBUF_CONSTINIT const ::_pbi::DescriptorTable descriptor_table_data_2eproto = {
     false,
     false,
-    158,
+    342,
     descriptor_table_protodef_data_2eproto,
     "data.proto",
     &descriptor_table_data_2eproto_once,
     descriptor_table_data_2eproto_deps,
     1,
-    1,
+    2,
     schemas,
     file_default_instances,
     TableStruct_data_2eproto::offsets,
@@ -336,6 +377,248 @@ void Record::InternalSwap(Record* PROTOBUF_RESTRICT other) {
 }
 
 ::google::protobuf::Metadata Record::GetMetadata() const {
+  return ::google::protobuf::Message::GetMetadataImpl(GetClassData()->full());
+}
+// ===================================================================
+
+class RecordBatch::_Internal {
+ public:
+};
+
+RecordBatch::RecordBatch(::google::protobuf::Arena* arena)
+#if defined(PROTOBUF_CUSTOM_VTABLE)
+    : ::google::protobuf::Message(arena, _class_data_.base()) {
+#else   // PROTOBUF_CUSTOM_VTABLE
+    : ::google::protobuf::Message(arena) {
+#endif  // PROTOBUF_CUSTOM_VTABLE
+  SharedCtor(arena);
+  // @@protoc_insertion_point(arena_constructor:dataflow.RecordBatch)
+}
+inline PROTOBUF_NDEBUG_INLINE RecordBatch::Impl_::Impl_(
+    ::google::protobuf::internal::InternalVisibility visibility, ::google::protobuf::Arena* arena,
+    const Impl_& from, const ::dataflow::RecordBatch& from_msg)
+      : records_{visibility, arena, from.records_},
+        _cached_size_{0} {}
+
+RecordBatch::RecordBatch(
+    ::google::protobuf::Arena* arena,
+    const RecordBatch& from)
+#if defined(PROTOBUF_CUSTOM_VTABLE)
+    : ::google::protobuf::Message(arena, _class_data_.base()) {
+#else   // PROTOBUF_CUSTOM_VTABLE
+    : ::google::protobuf::Message(arena) {
+#endif  // PROTOBUF_CUSTOM_VTABLE
+  RecordBatch* const _this = this;
+  (void)_this;
+  _internal_metadata_.MergeFrom<::google::protobuf::UnknownFieldSet>(
+      from._internal_metadata_);
+  new (&_impl_) Impl_(internal_visibility(), arena, from._impl_, from);
+
+  // @@protoc_insertion_point(copy_constructor:dataflow.RecordBatch)
+}
+inline PROTOBUF_NDEBUG_INLINE RecordBatch::Impl_::Impl_(
+    ::google::protobuf::internal::InternalVisibility visibility,
+    ::google::protobuf::Arena* arena)
+      : records_{visibility, arena},
+        _cached_size_{0} {}
+
+inline void RecordBatch::SharedCtor(::_pb::Arena* arena) {
+  new (&_impl_) Impl_(internal_visibility(), arena);
+}
+RecordBatch::~RecordBatch() {
+  // @@protoc_insertion_point(destructor:dataflow.RecordBatch)
+  SharedDtor(*this);
+}
+inline void RecordBatch::SharedDtor(MessageLite& self) {
+  RecordBatch& this_ = static_cast<RecordBatch&>(self);
+  this_._internal_metadata_.Delete<::google::protobuf::UnknownFieldSet>();
+  ABSL_DCHECK(this_.GetArena() == nullptr);
+  this_._impl_.~Impl_();
+}
+
+inline void* RecordBatch::PlacementNew_(const void*, void* mem,
+                                        ::google::protobuf::Arena* arena) {
+  return ::new (mem) RecordBatch(arena);
+}
+constexpr auto RecordBatch::InternalNewImpl_() {
+  constexpr auto arena_bits = ::google::protobuf::internal::EncodePlacementArenaOffsets({
+      PROTOBUF_FIELD_OFFSET(RecordBatch, _impl_.records_) +
+          decltype(RecordBatch::_impl_.records_)::
+              InternalGetArenaOffset(
+                  ::google::protobuf::Message::internal_visibility()),
+  });
+  if (arena_bits.has_value()) {
+    return ::google::protobuf::internal::MessageCreator::ZeroInit(
+        sizeof(RecordBatch), alignof(RecordBatch), *arena_bits);
+  } else {
+    return ::google::protobuf::internal::MessageCreator(&RecordBatch::PlacementNew_,
+                                 sizeof(RecordBatch),
+                                 alignof(RecordBatch));
+  }
+}
+PROTOBUF_CONSTINIT
+PROTOBUF_ATTRIBUTE_INIT_PRIORITY1
+const ::google::protobuf::internal::ClassDataFull RecordBatch::_class_data_ = {
+    ::google::protobuf::internal::ClassData{
+        &_RecordBatch_default_instance_._instance,
+        &_table_.header,
+        nullptr,  // OnDemandRegisterArenaDtor
+        nullptr,  // IsInitialized
+        &RecordBatch::MergeImpl,
+        ::google::protobuf::Message::GetNewImpl<RecordBatch>(),
+#if defined(PROTOBUF_CUSTOM_VTABLE)
+        &RecordBatch::SharedDtor,
+        ::google::protobuf::Message::GetClearImpl<RecordBatch>(), &RecordBatch::ByteSizeLong,
+            &RecordBatch::_InternalSerialize,
+#endif  // PROTOBUF_CUSTOM_VTABLE
+        PROTOBUF_FIELD_OFFSET(RecordBatch, _impl_._cached_size_),
+        false,
+    },
+    &RecordBatch::kDescriptorMethods,
+    &descriptor_table_data_2eproto,
+    nullptr,  // tracker
+};
+const ::google::protobuf::internal::ClassData* RecordBatch::GetClassData() const {
+  ::google::protobuf::internal::PrefetchToLocalCache(&_class_data_);
+  ::google::protobuf::internal::PrefetchToLocalCache(_class_data_.tc_table);
+  return _class_data_.base();
+}
+PROTOBUF_CONSTINIT PROTOBUF_ATTRIBUTE_INIT_PRIORITY1
+const ::_pbi::TcParseTable<0, 1, 1, 0, 2> RecordBatch::_table_ = {
+  {
+    0,  // no _has_bits_
+    0, // no _extensions_
+    1, 0,  // max_field_number, fast_idx_mask
+    offsetof(decltype(_table_), field_lookup_table),
+    4294967294,  // skipmap
+    offsetof(decltype(_table_), field_entries),
+    1,  // num_field_entries
+    1,  // num_aux_entries
+    offsetof(decltype(_table_), aux_entries),
+    _class_data_.base(),
+    nullptr,  // post_loop_handler
+    ::_pbi::TcParser::GenericFallback,  // fallback
+    #ifdef PROTOBUF_PREFETCH_PARSE_TABLE
+    ::_pbi::TcParser::GetTable<::dataflow::RecordBatch>(),  // to_prefetch
+    #endif  // PROTOBUF_PREFETCH_PARSE_TABLE
+  }, {{
+    // repeated .dataflow.Record records = 1;
+    {::_pbi::TcParser::FastMtR1,
+     {10, 63, 0, PROTOBUF_FIELD_OFFSET(RecordBatch, _impl_.records_)}},
+  }}, {{
+    65535, 65535
+  }}, {{
+    // repeated .dataflow.Record records = 1;
+    {PROTOBUF_FIELD_OFFSET(RecordBatch, _impl_.records_), 0, 0,
+    (0 | ::_fl::kFcRepeated | ::_fl::kMessage | ::_fl::kTvTable)},
+  }}, {{
+    {::_pbi::TcParser::GetTable<::dataflow::Record>()},
+  }}, {{
+  }},
+};
+
+PROTOBUF_NOINLINE void RecordBatch::Clear() {
+// @@protoc_insertion_point(message_clear_start:dataflow.RecordBatch)
+  ::google::protobuf::internal::TSanWrite(&_impl_);
+  ::uint32_t cached_has_bits = 0;
+  // Prevent compiler warnings about cached_has_bits being unused
+  (void) cached_has_bits;
+
+  _impl_.records_.Clear();
+  _internal_metadata_.Clear<::google::protobuf::UnknownFieldSet>();
+}
+
+#if defined(PROTOBUF_CUSTOM_VTABLE)
+        ::uint8_t* RecordBatch::_InternalSerialize(
+            const MessageLite& base, ::uint8_t* target,
+            ::google::protobuf::io::EpsCopyOutputStream* stream) {
+          const RecordBatch& this_ = static_cast<const RecordBatch&>(base);
+#else   // PROTOBUF_CUSTOM_VTABLE
+        ::uint8_t* RecordBatch::_InternalSerialize(
+            ::uint8_t* target,
+            ::google::protobuf::io::EpsCopyOutputStream* stream) const {
+          const RecordBatch& this_ = *this;
+#endif  // PROTOBUF_CUSTOM_VTABLE
+          // @@protoc_insertion_point(serialize_to_array_start:dataflow.RecordBatch)
+          ::uint32_t cached_has_bits = 0;
+          (void)cached_has_bits;
+
+          // repeated .dataflow.Record records = 1;
+          for (unsigned i = 0, n = static_cast<unsigned>(
+                                   this_._internal_records_size());
+               i < n; i++) {
+            const auto& repfield = this_._internal_records().Get(i);
+            target =
+                ::google::protobuf::internal::WireFormatLite::InternalWriteMessage(
+                    1, repfield, repfield.GetCachedSize(),
+                    target, stream);
+          }
+
+          if (PROTOBUF_PREDICT_FALSE(this_._internal_metadata_.have_unknown_fields())) {
+            target =
+                ::_pbi::WireFormat::InternalSerializeUnknownFieldsToArray(
+                    this_._internal_metadata_.unknown_fields<::google::protobuf::UnknownFieldSet>(::google::protobuf::UnknownFieldSet::default_instance), target, stream);
+          }
+          // @@protoc_insertion_point(serialize_to_array_end:dataflow.RecordBatch)
+          return target;
+        }
+
+#if defined(PROTOBUF_CUSTOM_VTABLE)
+        ::size_t RecordBatch::ByteSizeLong(const MessageLite& base) {
+          const RecordBatch& this_ = static_cast<const RecordBatch&>(base);
+#else   // PROTOBUF_CUSTOM_VTABLE
+        ::size_t RecordBatch::ByteSizeLong() const {
+          const RecordBatch& this_ = *this;
+#endif  // PROTOBUF_CUSTOM_VTABLE
+          // @@protoc_insertion_point(message_byte_size_start:dataflow.RecordBatch)
+          ::size_t total_size = 0;
+
+          ::uint32_t cached_has_bits = 0;
+          // Prevent compiler warnings about cached_has_bits being unused
+          (void)cached_has_bits;
+
+          ::_pbi::Prefetch5LinesFrom7Lines(&this_);
+           {
+            // repeated .dataflow.Record records = 1;
+            {
+              total_size += 1UL * this_._internal_records_size();
+              for (const auto& msg : this_._internal_records()) {
+                total_size += ::google::protobuf::internal::WireFormatLite::MessageSize(msg);
+              }
+            }
+          }
+          return this_.MaybeComputeUnknownFieldsSize(total_size,
+                                                     &this_._impl_._cached_size_);
+        }
+
+void RecordBatch::MergeImpl(::google::protobuf::MessageLite& to_msg, const ::google::protobuf::MessageLite& from_msg) {
+  auto* const _this = static_cast<RecordBatch*>(&to_msg);
+  auto& from = static_cast<const RecordBatch&>(from_msg);
+  // @@protoc_insertion_point(class_specific_merge_from_start:dataflow.RecordBatch)
+  ABSL_DCHECK_NE(&from, _this);
+  ::uint32_t cached_has_bits = 0;
+  (void) cached_has_bits;
+
+  _this->_internal_mutable_records()->MergeFrom(
+      from._internal_records());
+  _this->_internal_metadata_.MergeFrom<::google::protobuf::UnknownFieldSet>(from._internal_metadata_);
+}
+
+void RecordBatch::CopyFrom(const RecordBatch& from) {
+// @@protoc_insertion_point(class_specific_copy_from_start:dataflow.RecordBatch)
+  if (&from == this) return;
+  Clear();
+  MergeFrom(from);
+}
+
+
+void RecordBatch::InternalSwap(RecordBatch* PROTOBUF_RESTRICT other) {
+  using std::swap;
+  _internal_metadata_.InternalSwap(&other->_internal_metadata_);
+  _impl_.records_.InternalSwap(&other->_impl_.records_);
+}
+
+::google::protobuf::Metadata RecordBatch::GetMetadata() const {
   return ::google::protobuf::Message::GetMetadataImpl(GetClassData()->full());
 }
 // @@protoc_insertion_point(namespace_scope)
