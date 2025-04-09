@@ -1,253 +1,91 @@
-// #include <iostream>
-// #include <memory>
-// #include <string>
-// #include <sys/mman.h>
-// #include <sys/stat.h>
-// #include <fcntl.h>
-// #include <unistd.h>
-// #include <mutex>
-
-// #include <grpcpp/grpcpp.h>
-// #include "data.pb.h"
-// #include "data.grpc.pb.h"
-
-// #include "read_config.h"  // for loadNodeConfig
-
-// using grpc::Server;
-// using grpc::ServerBuilder;
-// using grpc::ServerContext;
-// using grpc::Status;
-// using google::protobuf::Empty;
-// using dataflow::DataService;
-// using dataflow::Record;
-
-// static const char* SHM_NAME = "/shm_A_to_B";
-// static const size_t SHM_SIZE = 500 * 1024 * 1024;
-// size_t g_rowCount = 0;
-
-// // Global resources for shared memory
-// std::mutex g_mutex;
-// char* g_shmPtr = nullptr;
-// size_t g_writeOffset = 0;
-
-// class NodeAServiceImpl final : public DataService::Service {
-// public:
-//     // LOG: On each SendRecord call, we print to see if data is received
-//     Status SendRecord(ServerContext* context, const Record* request, Empty* response) override {
-//     std::cout << "[A] Received row: " << request->row_data() << std::endl;
-
-//     std::lock_guard<std::mutex> lock(g_mutex);
-//     std::string row = request->row_data() + "\n";
-
-//     std::cout << "[A] Current g_writeOffset: " << g_writeOffset
-//               << ", row size: " << row.size() << std::endl;
-
-//     if (g_writeOffset + row.size() < SHM_SIZE) {
-//         memcpy(g_shmPtr + g_writeOffset, row.data(), row.size());
-//         g_writeOffset += row.size();
-//         g_rowCount++;  // Increment the row counter
-//         std::cout << "[A] Wrote row to shared memory. New g_writeOffset: "
-//                   << g_writeOffset << std::endl;
-//     } else {
-//         std::cerr << "[A] Not enough space in shared memory! (Offset=" 
-//                   << g_writeOffset << ")" << std::endl;
-//     }
-//     return Status::OK;
-// }
-
-// };
-
-// void RunNodeA(const std::string& jsonFile, const std::string& nodeName) {
-
-//     // LOG: Let’s show the args
-//     std::cout << "[A] RunNodeA called with jsonFile=" << jsonFile
-//               << ", nodeName=" << nodeName << std::endl;
-
-//     NodeConfig config;
-//     if (!loadNodeConfig(jsonFile, nodeName, config)) {
-//         std::cerr << "[A] Failed to load config for nodeName=" << nodeName << std::endl;
-//         return;
-//     }
-
-//     // LOG: show the config address
-//     std::cout << "[A] According to config, listenAddress=" << config.listenAddress << std::endl;
-
-//     // Setup shared memory
-//     shm_unlink(SHM_NAME);
-//     int fd = shm_open(SHM_NAME, O_CREAT | O_RDWR, 0666);
-//     if (fd < 0) {
-//         std::cerr << "[A] shm_open failed (fd<0)!" << std::endl;
-//         return;
-//     }
-//     if (ftruncate(fd, SHM_SIZE) != 0) {
-//         std::cerr << "[A] ftruncate failed on shared memory." << std::endl;
-//         close(fd);
-//         return;
-//     }
-//     g_shmPtr = (char*)mmap(nullptr, SHM_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-//     close(fd);
-//     if (g_shmPtr == MAP_FAILED) {
-//         std::cerr << "[A] mmap failed! Can't attach shared memory." << std::endl;
-//         return;
-//     }
-//     // LOG: confirm success
-//     std::cout << "[A] Successfully attached shared memory at " << SHM_NAME << std::endl;
-
-//     // Build the gRPC server
-//     NodeAServiceImpl service;
-//     grpc::ServerBuilder builder;
-
-//     builder.AddListeningPort(config.listenAddress, grpc::InsecureServerCredentials());
-//     builder.RegisterService(&service);
-
-//     std::unique_ptr<grpc::Server> server(builder.BuildAndStart());
-//     if (!server) {
-//         std::cerr << "[A] Failed to build/start gRPC server on " << config.listenAddress << std::endl;
-//         return;
-//     }
-
-//     std::cout << "[A] Listening on " << config.listenAddress << std::endl;
-//     // LOG: blocking call - waiting for RPC calls
-//     server->Wait();
-
-//     // Cleanup if server->Wait() exits
-//     std::cout << "[A] Server shutting down. Cleaning up shared memory.\n";
-//     munmap(g_shmPtr, SHM_SIZE);
-//     shm_unlink(SHM_NAME);
-// }
-
-// int main(int argc, char** argv) {
-//     if (argc < 3) {
-//         std::cerr << "Usage: " << argv[0] << " <config.json> <nodeName>\n";
-//         return 1;
-//     }
-//     std::string jsonFile = argv[1];
-//     std::string nodeName = argv[2];
-
-//     RunNodeA(jsonFile, nodeName);
-//     return 0;
-// }
-
-
-
 #include <iostream>
-#include <memory>
-#include <string>
+#include <mutex>
+#include <thread>
 #include <sys/mman.h>
-#include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
-#include <mutex>
-
 #include <grpcpp/grpcpp.h>
 #include "data.pb.h"
 #include "data.grpc.pb.h"
-#include "read_config.h"  // for loadNodeConfig
+#include "read_config.h"
 
 using grpc::Server;
 using grpc::ServerBuilder;
 using grpc::ServerContext;
+using grpc::ServerCompletionQueue;
 using grpc::Status;
-using google::protobuf::Empty;
 using dataflow::DataService;
 using dataflow::Record;
+using google::protobuf::Empty;
 
 static const char* SHM_NAME = "/shm_A_to_B";
 static const size_t SHM_SIZE = 500 * 1024 * 1024;
+static std::mutex shm_mtx;
+static char* shm_ptr = nullptr;
+static size_t shm_off = 0;
 
-// Global resources for shared memory
-std::mutex g_mutex;
-char* g_shmPtr = nullptr;
-size_t g_writeOffset = 0;
-size_t g_totalRowsWritten = 0;  // Counter for total rows written
-
-class NodeAServiceImpl final : public DataService::Service {
+class CallData {
 public:
-    Status SendRecord(ServerContext* context, const Record* request, Empty* response) override {
-        std::cout << "[A] Received row: " << request->row_data() << std::endl;
-
-        std::lock_guard<std::mutex> lock(g_mutex);
-        std::string row = request->row_data() + "\n";
-
-        std::cout << "[A] Current g_writeOffset: " << g_writeOffset
-                  << ", row size: " << row.size() << std::endl;
-
-        if (g_writeOffset + row.size() < SHM_SIZE) {
-            memcpy(g_shmPtr + g_writeOffset, row.data(), row.size());
-            g_writeOffset += row.size();
-            g_totalRowsWritten++;  // Increment the counter
-            std::cout << "[A] Wrote row to shared memory. New g_writeOffset: "
-                      << g_writeOffset << std::endl;
-            std::cout << "[A] Total rows written so far: " << g_totalRowsWritten << std::endl;
-        } else {
-            std::cerr << "[A] Not enough space in shared memory! (Offset=" 
-                      << g_writeOffset << ")" << std::endl;
-        }
-        return Status::OK;
+    CallData(DataService::AsyncService* service, ServerCompletionQueue* cq)
+        : service_(service), cq_(cq), responder_(&ctx_), status_(CREATE) {
+        Proceed();
     }
+
+    void Proceed(bool ok = true) {
+        if (!ok) {
+            delete this;
+            return;
+        }
+
+        if (status_ == CREATE) {
+            status_ = PROCESS;
+            service_->RequestSendRecord(&ctx_, &request_, &responder_, cq_, cq_, this);
+        } else if (status_ == PROCESS) {
+            new CallData(service_, cq_);
+            
+            // Write to shared memory
+            {
+                std::lock_guard<std::mutex> lock(shm_mtx);
+                std::string row = request_.row_data() + "\n";
+                if (shm_off + row.size() <= SHM_SIZE) {
+                    memcpy(shm_ptr + shm_off, row.data(), row.size());
+                    shm_off += row.size();
+                    std::cout << "[A] Wrote row to SHM (" << shm_off << "/" << SHM_SIZE << ")\n";
+                } else {
+                    std::cerr << "[A] SHM full!\n";
+                }
+            }
+
+            status_ = FINISH;
+            responder_.Finish(Empty(), Status::OK, this);
+        } else {
+            delete this;
+        }
+    }
+
+private:
+    DataService::AsyncService* service_;
+    ServerCompletionQueue* cq_;
+    ServerContext ctx_;
+    Record request_;
+    Empty response_;
+    grpc::ServerAsyncResponseWriter<Empty> responder_;
+
+    enum CallStatus { CREATE, PROCESS, FINISH };
+    CallStatus status_;
 };
 
-void RunNodeA(const std::string& jsonFile, const std::string& nodeName) {
-    std::cout << "[A] RunNodeA called with jsonFile=" << jsonFile
-              << ", nodeName=" << nodeName << std::endl;
-
-    NodeConfig config;
-    if (!loadNodeConfig(jsonFile, nodeName, config)) {
-        std::cerr << "[A] Failed to load config for nodeName=" << nodeName << std::endl;
-        return;
+void HandleRpcs(DataService::AsyncService* service, ServerCompletionQueue* cq) {
+    new CallData(service, cq);
+    void* tag;
+    bool ok;
+    while (true) {
+        if (!cq->Next(&tag, &ok)) {
+            std::cerr << "[A] Completion queue shutdown\n";
+            break;
+        }
+        static_cast<CallData*>(tag)->Proceed(ok);
     }
-
-    std::cout << "[A] According to config, listenAddress=" << config.listenAddress << std::endl;
-
-    // Setup shared memory
-    shm_unlink(SHM_NAME);
-    int fd = shm_open(SHM_NAME, O_CREAT | O_RDWR, 0666);
-    if (fd < 0) {
-        std::cerr << "[A] shm_open failed (fd<0)!" << std::endl;
-        return;
-    }
-    if (ftruncate(fd, SHM_SIZE) != 0) {
-        std::cerr << "[A] ftruncate failed on shared memory." << std::endl;
-        close(fd);
-        return;
-    }
-    g_shmPtr = (char*)mmap(nullptr, SHM_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-    close(fd);
-    if (g_shmPtr == MAP_FAILED) {
-        std::cerr << "[A] mmap failed! Can't attach shared memory." << std::endl;
-        return;
-    }
-    std::cout << "[A] Successfully attached shared memory at " << SHM_NAME << std::endl;
-
-    // Build the gRPC server
-    NodeAServiceImpl service;
-    grpc::ServerBuilder builder;
-
-    builder.AddListeningPort(config.listenAddress, grpc::InsecureServerCredentials());
-    builder.RegisterService(&service);
-
-    std::unique_ptr<grpc::Server> server(builder.BuildAndStart());
-    if (!server) {
-        std::cerr << "[A] Failed to build/start gRPC server on " << config.listenAddress << std::endl;
-        return;
-    }
-
-    std::cout << "[A] Listening on " << config.listenAddress << std::endl;
-    
-    // Register cleanup function to log final count
-    std::atexit([]() {
-        std::cout << "[A] FINAL TOTAL ROWS WRITTEN TO SHM: " << g_totalRowsWritten << std::endl;
-    });
-
-    server->Wait();
-
-    // Cleanup
-    std::cout << "[A] Server shutting down. Cleaning up shared memory.\n";
-    std::cout << "[A] Final row count: " << g_totalRowsWritten << " rows written to shared memory\n";
-    std::cout << "[A] FINAL SHM USAGE: " << g_writeOffset << "/" << SHM_SIZE 
-          << " bytes (" << (g_writeOffset*100.0/SHM_SIZE) << "% used)\n";
-    munmap(g_shmPtr, SHM_SIZE);
-    shm_unlink(SHM_NAME);
 }
 
 int main(int argc, char** argv) {
@@ -255,9 +93,53 @@ int main(int argc, char** argv) {
         std::cerr << "Usage: " << argv[0] << " <config.json> <nodeName>\n";
         return 1;
     }
-    std::string jsonFile = argv[1];
-    std::string nodeName = argv[2];
 
-    RunNodeA(jsonFile, nodeName);
+    NodeConfig cfg;
+    if (!loadNodeConfig(argv[1], argv[2], cfg)) {
+        std::cerr << "[A] Failed to load config\n";
+        return 1;
+    }
+
+    // Setup shared memory
+    shm_unlink(SHM_NAME);
+    int fd = shm_open(SHM_NAME, O_CREAT|O_RDWR, 0666);
+    if (fd < 0) {
+        std::cerr << "[A] shm_open failed: " << strerror(errno) << "\n";
+        return 1;
+    }
+    if (ftruncate(fd, SHM_SIZE) != 0) {
+        std::cerr << "[A] ftruncate failed: " << strerror(errno) << "\n";
+        close(fd);
+        return 1;
+    }
+    shm_ptr = static_cast<char*>(mmap(nullptr, SHM_SIZE, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0));
+    close(fd);
+    if (shm_ptr == MAP_FAILED) {
+        std::cerr << "[A] mmap failed: " << strerror(errno) << "\n";
+        return 1;
+    }
+
+    // Build server
+    ServerBuilder builder;
+    builder.AddListeningPort(cfg.listenAddress, grpc::InsecureServerCredentials());
+    
+    DataService::AsyncService service;
+    builder.RegisterService(&service);
+    
+    std::unique_ptr<ServerCompletionQueue> cq = builder.AddCompletionQueue();
+    std::unique_ptr<Server> server(builder.BuildAndStart());
+    
+    std::cout << "[A] Server listening on " << cfg.listenAddress << "\n";
+    
+    // Handle RPCs in a separate thread
+    std::thread rpc_thread(HandleRpcs, &service, cq.get());
+    
+    server->Wait();
+    rpc_thread.join();
+    
+    // Cleanup
+    munmap(shm_ptr, SHM_SIZE);
+    shm_unlink(SHM_NAME);
+    
     return 0;
 }

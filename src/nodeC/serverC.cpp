@@ -1,131 +1,28 @@
-// #include <iostream>
-// #include <grpcpp/grpcpp.h>
-// #include "data.pb.h"
-// #include "data.grpc.pb.h"
-// #include "read_config.h"
-
-// using grpc::Server;
-// using grpc::ServerBuilder;
-// using grpc::ServerContext;
-// using grpc::Status;
-// using google::protobuf::Empty;
-// using dataflow::DataService;
-// using dataflow::Record;
-
-// class NodeCServiceImpl final : public DataService::Service {
-// public:
-//     Status SendRecord(ServerContext* context, const Record* request, Empty* response) override {
-//         std::cout << "[C] Received: " << request->row_data() << std::endl;
-//         return Status::OK;
-//     }
-// };
-
-// void RunNodeC(const std::string& jsonFile, const std::string& nodeName) {
-//     NodeConfig config;
-//     if (!loadNodeConfig(jsonFile, nodeName, config)) {
-//         std::cerr << "Failed to load config for node C\n";
-//         return;
-//     }
-
-//     NodeCServiceImpl service;
-//     ServerBuilder builder;
-//     builder.AddListeningPort(config.listenAddress, grpc::InsecureServerCredentials());
-//     builder.RegisterService(&service);
-
-//     auto server = builder.BuildAndStart();
-//     std::cout << "[C] Listening on " << config.listenAddress << std::endl;
-//     server->Wait();
-// }
-
-// int main(int argc, char** argv) {
-//     // usage: serverC <config.json> C
-//     if (argc < 3) {
-//         std::cerr << "Usage: " << argv[0] << " <config.json> <nodeName>\n";
-//         return 1;
-//     }
-//     RunNodeC(argv[1], argv[2]);
-//     return 0;
-// }
-
-
+// src/nodeC/serverC_async.cpp
 #include <iostream>
-#include <vector>
-#include <csignal>     // <-- for std::signal and SIGINT
-#include <memory>
-
 #include <grpcpp/grpcpp.h>
 #include "data.pb.h"
 #include "data.grpc.pb.h"
 #include "read_config.h"
-
-using grpc::Server;
-using grpc::ServerBuilder;
-using grpc::ServerContext;
-using grpc::Status;
-using google::protobuf::Empty;
-using dataflow::DataService;
-using dataflow::Record;
-
-// Global tracker
-std::vector<std::string> g_receivedRows;
-
-// Make the gRPC server a static/global so signal handler can call Shutdown()
-static std::unique_ptr<Server> g_server;
-
-// Signal handler
-void handleSigint(int /* signum */) {
-    if (g_server) {
-        std::cout << "[C] Received SIGINT, shutting down server gracefully...\n";
-        g_server->Shutdown();
-    }
-}
-
-class NodeCServiceImpl final : public DataService::Service {
-public:
-    Status SendRecord(ServerContext* context, const Record* request, Empty* response) override {
-        g_receivedRows.push_back(request->row_data());
-        std::cout << "[C] Received row #" << g_receivedRows.size() << std::endl;
-        return Status::OK;
-    }
+using grpc::Server; using grpc::ServerBuilder;
+using grpc::ServerContext; using grpc::Status;
+using dataflow::DataService; using dataflow::Record; using google::protobuf::Empty;
+class CService : public DataService::Service {
+  Status SendRecord(ServerContext*, const Record* r, Empty*) override {
+    std::cout << "[C] " << r->row_data() << "\n";
+    return Status::OK;
+  }
 };
+int main(int argc,char**argv){
+  struct rlimit limits;
+  limits.rlim_cur = 65535;  // Increase soft limit
+  limits.rlim_max = 65535;  // Increase hard limit
+  setrlimit(RLIMIT_NOFILE, &limits);
 
-void RunNodeC(const std::string& jsonFile, const std::string& nodeName) {
-    NodeConfig config;
-    if (!loadNodeConfig(jsonFile, nodeName, config)) {
-        std::cerr << "[C] Failed to load config.\n";
-        return;
-    }
-
-    NodeCServiceImpl service;
-    ServerBuilder builder;
-    builder.AddListeningPort(config.listenAddress, grpc::InsecureServerCredentials());
-    builder.RegisterService(&service);
-
-    // Install our signal handler
-    std::signal(SIGINT, handleSigint);
-
-    g_server = builder.BuildAndStart();
-    std::cout << "[C] Listening on " << config.listenAddress << "\n";
-
-    // Will block until handleSigint calls Shutdown()
-    g_server->Wait();
-
-    // Final summary after normal shutdown
-    std::cout << "\n[C] FINAL SUMMARY:\n";
-    if (!g_receivedRows.empty()) {
-        std::cout << "  - TOTAL RECEIVED: " << g_receivedRows.size() << " rows\n"
-                  << "  - FIRST ROW: " << g_receivedRows.front() << "\n"
-                  << "  - LAST ROW: " << g_receivedRows.back() << "\n";
-    } else {
-        std::cout << "  - NO ROWS RECEIVED!\n";
-    }
-}
-
-int main(int argc, char** argv) {
-    if (argc < 3) {
-        std::cerr << "Usage: " << argv[0] << " <config.json> <nodeName>\n";
-        return 1;
-    }
-    RunNodeC(argv[1], argv[2]);
-    return 0;
+  NodeConfig cfg; loadNodeConfig(argv[1],argv[2],cfg);
+  ServerBuilder b; b.AddListeningPort(cfg.listenAddress,grpc::InsecureServerCredentials());
+  CService svc; b.RegisterService(&svc);
+  auto s=b.BuildAndStart();
+   std::cout << "[C] Server listening on " << cfg.listenAddress << "\n";
+   s->Wait();
 }

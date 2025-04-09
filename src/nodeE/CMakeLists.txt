@@ -1,16 +1,34 @@
+# src/nodeE/CMakeLists.txt
 cmake_minimum_required(VERSION 3.10)
+project(nodeE)
 
-set(PROTO_SRC "${PROJECT_SOURCE_DIR}/proto/data.pb.cc"
-              "${PROJECT_SOURCE_DIR}/proto/data.grpc.pb.cc")
+find_package(gRPC CONFIG REQUIRED)
+find_package(Protobuf CONFIG REQUIRED)
 
-set(PROTO_HDR "${PROJECT_SOURCE_DIR}/proto/data.pb.h"
-              "${PROJECT_SOURCE_DIR}/proto/data.grpc.pb.h")
+set(PROTO_SRC
+    ${CMAKE_SOURCE_DIR}/proto/data.pb.cc
+    ${CMAKE_SOURCE_DIR}/proto/data.grpc.pb.cc
+)
+set(PROTO_HDR
+    ${CMAKE_SOURCE_DIR}/proto/data.pb.h
+    ${CMAKE_SOURCE_DIR}/proto/data.grpc.pb.h
+)
 
-add_executable(serverE serverE.cpp ${PROTO_SRC} ${PROTO_HDR})
-target_include_directories(serverE PRIVATE ${PROJECT_SOURCE_DIR}/proto)
+add_executable(serverE
+    serverE.cpp
+    ${PROTO_SRC}
+    ${PROTO_HDR}
+)
+
+target_include_directories(serverE PRIVATE
+    ${CMAKE_SOURCE_DIR}/proto
+    ${Protobuf_INCLUDE_DIRS}
+    ${gRPC_INCLUDE_DIRS}
+)
+
 target_link_libraries(serverE
     PRIVATE
     gRPC::grpc++
     protobuf::libprotobuf
-    config_reader  # from the top-level library
+    config_reader
 )
