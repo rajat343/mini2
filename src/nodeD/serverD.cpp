@@ -1,53 +1,3 @@
-// #include <iostream>
-// #include <grpcpp/grpcpp.h>
-// #include "data.pb.h"
-// #include "data.grpc.pb.h"
-// #include "read_config.h"
-
-// using grpc::Server;
-// using grpc::ServerBuilder;
-// using grpc::ServerContext;
-// using grpc::Status;
-// using google::protobuf::Empty;
-// using dataflow::DataService;
-// using dataflow::Record;
-
-// class NodeCServiceImpl final : public DataService::Service {
-// public:
-//     Status SendRecord(ServerContext* context, const Record* request, Empty* response) override {
-//         std::cout << "[C] Received: " << request->row_data() << std::endl;
-//         return Status::OK;
-//     }
-// };
-
-// void RunNodeC(const std::string& jsonFile, const std::string& nodeName) {
-//     NodeConfig config;
-//     if (!loadNodeConfig(jsonFile, nodeName, config)) {
-//         std::cerr << "Failed to load config for node C\n";
-//         return;
-//     }
-
-//     NodeCServiceImpl service;
-//     ServerBuilder builder;
-//     builder.AddListeningPort(config.listenAddress, grpc::InsecureServerCredentials());
-//     builder.RegisterService(&service);
-
-//     auto server = builder.BuildAndStart();
-//     std::cout << "[C] Listening on " << config.listenAddress << std::endl;
-//     server->Wait();
-// }
-
-// int main(int argc, char** argv) {
-//     // usage: serverC <config.json> C
-//     if (argc < 3) {
-//         std::cerr << "Usage: " << argv[0] << " <config.json> <nodeName>\n";
-//         return 1;
-//     }
-//     RunNodeC(argv[1], argv[2]);
-//     return 0;
-// }
-
-
 #include <iostream>
 #include <vector>
 #include <memory>
@@ -56,6 +6,7 @@
 #include "data.pb.h"
 #include "data.grpc.pb.h"
 #include "read_config.h"
+#include <chrono>  // for timing metrics
 
 using grpc::Server;
 using grpc::ServerBuilder;
@@ -75,6 +26,11 @@ std::vector<std::string> g_sentToERows;
 // Global server pointer for graceful shutdown
 static std::unique_ptr<Server> g_server;
 
+// Performance metrics
+auto g_startTime = std::chrono::high_resolution_clock::now();
+double g_totalProcessingTime = 0.0;
+int g_totalRecordsProcessed = 0;
+
 // Signal handler
 void handleSigint(int /* signum */) {
     if (g_server) {
@@ -86,28 +42,63 @@ void handleSigint(int /* signum */) {
 class NodeDServiceImpl final : public DataService::Service {
     std::unique_ptr<DataService::Stub> stubE;
 public:
-    Status SendRecord(ServerContext* context, const Record* request, Empty* response) override {
-        // Decide whether to keep or send to E
-        if (rand() % 100 < (KEEP_PERCENT * 100)) {
-            g_keptRows.push_back(request->row_data());
-            std::cout << "[D] Kept row: " << request->row_data() << "\n";
-        } else {
-            if (!stubE) {
-                // Hard-coded address here for demonstration; in real code, read from config
-                stubE = DataService::NewStub(
-                    grpc::CreateChannel("localhost:50055", grpc::InsecureChannelCredentials())
-                );
-            }
-            g_sentToERows.push_back(request->row_data());
-            Record record;
-            record.set_row_data(request->row_data());
-            Empty e;
-            ClientContext ctx;
-            stubE->SendRecord(&ctx, record, &e);
-            std::cout << "[D] Sent to E: " << request->row_data() << "\n";
+Status SendRecord(ServerContext* context, const Record* request, Empty* response) override {
+    // Start timing for this record
+    auto startTime = std::chrono::high_resolution_clock::now();
+    
+    // Decide whether to keep or send to E
+    if (rand() % 100 < (KEEP_PERCENT * 100)) {
+        g_keptRows.push_back(request->row_data());
+        // Only log occasionally
+        if (g_keptRows.size() % 100 == 0) {
+            std::cout << "[D] Kept row #" << g_keptRows.size() << "\n";
         }
-        return Status::OK;
+    } else {
+        if (!stubE) {
+            // Hard-coded address here for demonstration; in real code, read from config
+            stubE = DataService::NewStub(
+                grpc::CreateChannel("localhost:50055", grpc::InsecureChannelCredentials())
+            );
+        }
+        g_sentToERows.push_back(request->row_data());
+        Record record;
+        record.set_row_data(request->row_data());
+        Empty e;
+        ClientContext ctx;
+        stubE->SendRecord(&ctx, record, &e);
+        
+        // Only log occasionally
+        if (g_sentToERows.size() % 100 == 0) {
+            std::cout << "[D] Sent to E: row #" << g_sentToERows.size() << "\n";
+        }
     }
+    
+    // End timing for this record
+    auto duration = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::high_resolution_clock::now() - startTime).count();
+    double durationSec = duration / 1000000.0;
+    
+    // Update metrics
+    g_totalProcessingTime += durationSec;
+    g_totalRecordsProcessed++;
+    
+    // Log processing time only periodically
+    if (g_totalRecordsProcessed % 100 == 0) {
+        std::cout << "[D] Processed record #" << g_totalRecordsProcessed 
+                << " in " << durationSec << " seconds\n";
+    
+        // Print periodic statistics
+        auto totalTime = std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::high_resolution_clock::now() - g_startTime).count();
+        
+        std::cout << "[D] PERFORMANCE METRICS:\n"
+                << "  - Records processed: " << g_totalRecordsProcessed << "\n"
+                << "  - Average processing time: " << (g_totalProcessingTime / g_totalRecordsProcessed) << " sec/record\n"
+                << "  - Throughput: " << (g_totalRecordsProcessed / (totalTime > 0 ? totalTime : 1)) << " records/sec\n";
+    }
+    
+    return Status::OK;
+}
 };
 
 void RunNodeD(const std::string& jsonFile, const std::string& nodeName) {
@@ -125,11 +116,18 @@ void RunNodeD(const std::string& jsonFile, const std::string& nodeName) {
     // Install our signal handler
     std::signal(SIGINT, handleSigint);
 
+    // Reset start time before server starts
+    g_startTime = std::chrono::high_resolution_clock::now();
+    
     g_server = builder.BuildAndStart();
     std::cout << "[D] Listening on " << config.listenAddress << "\n";
 
     // Will block here until handleSigint calls Shutdown()
     g_server->Wait();
+
+    // Calculate final performance metrics
+    auto totalTime = std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::high_resolution_clock::now() - g_startTime).count();
 
     // Final summary after normal shutdown
     std::cout << "\n[D] FINAL SUMMARY:\n";
@@ -143,6 +141,13 @@ void RunNodeD(const std::string& jsonFile, const std::string& nodeName) {
                   << "    FIRST: " << g_sentToERows.front() << "\n"
                   << "    LAST: " << g_sentToERows.back() << "\n";
     }
+    
+    // Print final performance metrics
+    std::cout << "\n[D] FINAL PERFORMANCE METRICS:\n"
+              << "  - Total runtime: " << totalTime << " seconds\n"
+              << "  - Total records processed: " << g_totalRecordsProcessed << "\n"
+              << "  - Average processing time: " << (g_totalRecordsProcessed > 0 ? g_totalProcessingTime / g_totalRecordsProcessed : 0) << " sec/record\n"
+              << "  - Overall throughput: " << (totalTime > 0 ? g_totalRecordsProcessed / totalTime : 0) << " records/sec\n";
 }
 
 int main(int argc, char** argv) {

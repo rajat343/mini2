@@ -138,6 +138,8 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <mutex>
+#include <chrono>
+#include <iomanip>
 
 #include <grpcpp/grpcpp.h>
 #include "data.pb.h"
@@ -161,33 +163,74 @@ char* g_shmPtr = nullptr;
 size_t g_writeOffset = 0;
 size_t g_totalRowsWritten = 0;  // Counter for total rows written
 
+class Timer {
+    private:
+        std::chrono::high_resolution_clock::time_point start_time;
+        std::string name;
+    public:
+        Timer(const std::string& timer_name) : name(timer_name) {
+            start_time = std::chrono::high_resolution_clock::now();
+        }
+        
+        ~Timer() {
+            auto end_time = std::chrono::high_resolution_clock::now();
+            auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count();
+            std::cout << "[TIMER] " << name << ": " << std::fixed << std::setprecision(6) 
+                      << (duration / 1000000.0) << " seconds" << std::endl;
+        }
+    };
+
 class NodeAServiceImpl final : public DataService::Service {
 public:
-    Status SendRecord(ServerContext* context, const Record* request, Empty* response) override {
-        std::cout << "[A] Received row: " << request->row_data() << std::endl;
-
-        std::lock_guard<std::mutex> lock(g_mutex);
-        std::string row = request->row_data() + "\n";
-
-        std::cout << "[A] Current g_writeOffset: " << g_writeOffset
-                  << ", row size: " << row.size() << std::endl;
-
-        if (g_writeOffset + row.size() < SHM_SIZE) {
-            memcpy(g_shmPtr + g_writeOffset, row.data(), row.size());
-            g_writeOffset += row.size();
-            g_totalRowsWritten++;  // Increment the counter
-            std::cout << "[A] Wrote row to shared memory. New g_writeOffset: "
-                      << g_writeOffset << std::endl;
-            std::cout << "[A] Total rows written so far: " << g_totalRowsWritten << std::endl;
-        } else {
-            std::cerr << "[A] Not enough space in shared memory! (Offset=" 
-                      << g_writeOffset << ")" << std::endl;
-        }
-        return Status::OK;
+Status SendRecord(ServerContext* context, const Record* request, Empty* response) override {
+    Timer timer("A::SendRecord");
+    
+    // Only log every 100 records
+    static int log_counter = 0;
+    bool should_log = (++log_counter % 100 == 0);
+    
+    if (should_log) {
+        std::cout << "[A] Received row " << log_counter << ": " << request->row_data() << std::endl;
     }
+
+    std::lock_guard<std::mutex> lock(g_mutex);
+    std::string row = request->row_data() + "\n";
+
+    if (should_log) {
+        std::cout << "[A] Current g_writeOffset: " << g_writeOffset
+                << ", row size: " << row.size() << std::endl;
+    }
+
+    if (g_writeOffset + row.size() < SHM_SIZE) {
+        auto write_start = std::chrono::high_resolution_clock::now();
+        memcpy(g_shmPtr + g_writeOffset, row.data(), row.size());
+        auto write_end = std::chrono::high_resolution_clock::now();
+        auto write_duration = std::chrono::duration_cast<std::chrono::microseconds>(write_end - write_start).count();
+        
+        g_writeOffset += row.size();
+        g_totalRowsWritten++;  // Increment the counter
+        
+        if (should_log) {
+            std::cout << "[A] Wrote row to shared memory in " << (write_duration / 1000000.0) 
+                    << " seconds. New g_writeOffset: " << g_writeOffset << std::endl;
+            std::cout << "[A] Total rows written so far: " << g_totalRowsWritten << std::endl;
+        }
+    } else {
+        std::cerr << "[A] Not enough space in shared memory! (Offset=" 
+                << g_writeOffset << ")" << std::endl;
+    }
+    return Status::OK;
+}
 };
 
+std::chrono::high_resolution_clock::time_point g_serverStartTime;
+std::chrono::high_resolution_clock::time_point g_firstRecordTime;
+bool g_firstRecordProcessed = false;
+
 void RunNodeA(const std::string& jsonFile, const std::string& nodeName) {
+
+    g_serverStartTime = std::chrono::high_resolution_clock::now();
+    
     std::cout << "[A] RunNodeA called with jsonFile=" << jsonFile
               << ", nodeName=" << nodeName << std::endl;
 
@@ -233,6 +276,17 @@ void RunNodeA(const std::string& jsonFile, const std::string& nodeName) {
     }
 
     std::cout << "[A] Listening on " << config.listenAddress << std::endl;
+
+    auto serverRunDuration = std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::high_resolution_clock::now() - g_serverStartTime).count();
+    std::cout << "[A] Server ran for " << serverRunDuration << " seconds." << std::endl;
+    
+    if (g_firstRecordProcessed) {
+        auto processingDuration = std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::high_resolution_clock::now() - g_firstRecordTime).count();
+        std::cout << "[A] Processing time (first record to shutdown): " 
+                  << processingDuration << " seconds." << std::endl;
+    }
     
     // Register cleanup function to log final count
     std::atexit([]() {
